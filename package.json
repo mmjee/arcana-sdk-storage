@@ -56,10 +56,13 @@
     "@sentry/tracing": "^6.15.0",
     "assert": "^2.0.0",
     "axios": "^0.21.4",
+    "blob-to-buffer": "^1.2.9",
     "buffer": "^6.0.3",
+    "dexie": "^3.2.1",
     "eth-crypto": "^1.9.0",
     "eth-sig-util": "^3.0.1",
     "ethers": "^5.3.1",
+    "skynet-js": "^3.0.2",
     "tus-js-client": "^2.3.0",
     "tweetnacl": "^1.0.3"
   },

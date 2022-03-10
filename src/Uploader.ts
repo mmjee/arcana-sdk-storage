@@ -1,31 +1,72 @@
 import {
-  KeyGen,
-  fromHexString,
-  toHexString,
-  makeTx,
-  AESEncrypt,
-  encryptKey,
-  decryptKey,
   getProvider,
-  customError,
-  isFileUploaded,
+  customError, toHexString,
 } from './Utils';
-import * as tus from 'tus-js-client';
-import FileReader from './fileReader';
 import { utils, BigNumber } from 'ethers';
 import { AxiosInstance } from 'axios';
+
+import { promisify } from 'util'
+import _blobToBuffer from 'blob-to-buffer'
+
+const blobToBuffer = promisify(_blobToBuffer)
+
+export function getIVFromCounter (value) {
+  if (value === 0) {
+    return new Uint8Array([0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0]);
+  }
+  let counterValue = value / 16;
+  const counter = new Uint8Array(16);
+  for (let index = 15; index >= 0; --index) {
+    counter[index] = counterValue % 256;
+    counterValue = Math.floor(counterValue / 256);
+  }
+  return counter;
+}
+
+// Encrypt a file larger than available RAM, using only (by default) 32MB at a time
+async function encryptWholeFile ({ key, file, chunkSize }) {
+  const possibleChunks = Math.ceil(file.size / chunkSize)
+  const blobParts = []
+
+  for (let chunkNo = 0; chunkNo < possibleChunks; chunkNo++) {
+    const min = chunkNo * chunkSize
+    const max = min + chunkSize
+
+    const chunk = file.slice(min, max)
+    const buf = await blobToBuffer(chunk)
+
+    const iv = getIVFromCounter(chunkNo)
+    const ct = await window.crypto.subtle.encrypt(
+        {
+          counter: iv,
+          length: 64,
+          name: 'AES-CTR',
+        },
+        key,
+        buf
+    )
+
+    blobParts.push(ct)
+  }
+
+  return new Blob(blobParts, {
+    type: 'application/octet-stream'
+  })
+}
 
 export class Uploader {
   private readonly wallet: any;
   private readonly convergence: string;
   private readonly api: AxiosInstance;
   private readonly appAddress: string;
+  private readonly client: any;
 
-  constructor(appAddress: string, wallet: any, convergence: string, api: AxiosInstance) {
+  constructor(appAddress: string, wallet: any, convergence: string, api: AxiosInstance, client) {
     this.wallet = wallet;
     this.convergence = convergence;
     this.api = api;
     this.appAddress = appAddress;
+    this.client = client;
   }
 
   onSuccess = () => {};
@@ -69,111 +110,25 @@ export class Uploader {
     }
   };
 
-  upload = async (fileRaw: any, chunkSize: number = 10 * 2 ** 20) => {
-    let file = fileRaw;
+  upload = async (fileRaw: File, chunkSize: number = 2 ** 25) => {
     const walletAddress = await this.wallet.getAddress();
-    if (file instanceof File) {
-      file = new Blob([new Uint8Array(await file.arrayBuffer())], { type: file.type });
-      file.name = fileRaw.name;
-      // file['lastModified'] = fileRaw.lastModified;
-      file.name = fileRaw.name;
-    }
-    const hasher = new KeyGen(file, chunkSize);
-    let key;
-    const hash = await hasher.getHash();
-    const prevKey = localStorage.getItem(`${walletAddress}::key::${hash}`);
-    let host = localStorage.getItem(`${walletAddress}::host::${hash}`);
-    let token = localStorage.getItem(`${walletAddress}::token::${hash}`);
-    const did = utils.id(hash + this.convergence);
-    const wallet = this.wallet;
 
-    if (prevKey) {
-      const decryptedKey = await decryptKey(this.wallet.privateKey, prevKey);
-      key = await window.crypto.subtle.importKey('raw', fromHexString(decryptedKey), 'AES-CTR', false, ['encrypt']);
-      if (await isFileUploaded(this.appAddress, did)) {
-        throw customError('TRANSACTION', `File is already uploaded. DID is ${did}`);
-      }
-    } else {
-      key = await window.crypto.subtle.generateKey(
+    const key = await window.crypto.subtle.generateKey(
         {
           name: 'AES-CTR',
           length: 256,
         },
         true,
         ['encrypt', 'decrypt'],
-      );
-      const aes_raw = await crypto.subtle.exportKey('raw', key);
-      const hexString = toHexString(aes_raw);
+    );
 
-      const encryptedKey = await encryptKey(this.wallet._signingKey().publicKey, hexString);
+    const finalBlob = await encryptWholeFile({ key, file: fileRaw, chunkSize })
+    const { skylink } = await this.client.uploadFile(finalBlob)
 
-      const encryptedMetaData = await AESEncrypt(
-        key,
-        JSON.stringify({
-          name: file.name,
-          type: file.type,
-          size: file.size,
-          lastModified: file.lastModified,
-          hash,
-        }),
-      );
+    const aesRaw = await crypto.subtle.exportKey('raw', key);
+    const hexString = toHexString(aesRaw);
 
-      const node = (await this.api.get('/api/get-address/')).data;
-      host = node.host;
-
-      const res = await makeTx(this.appAddress, this.api, this.wallet, 'uploadInit', [
-        did,
-        BigNumber.from(6),
-        BigNumber.from(4),
-        BigNumber.from(file.size),
-        utils.toUtf8Bytes(encryptedMetaData),
-        utils.toUtf8Bytes(encryptedKey),
-        node.address,
-      ]);
-      token = res.token;
-      localStorage.setItem(`${walletAddress}::host:${hash}`, host);
-      localStorage.setItem(`${walletAddress}::key::${hash}`, encryptedKey);
-      localStorage.setItem(`${walletAddress}::token::${hash}`, token);
-    }
-    const endpoint = host + 'files/';
-    // console.log('Token: ', token);
-    // console.log('Endpoint: ', endpoint);
-    const upload = new tus.Upload(file, {
-      endpoint,
-      retryDelays: [0, 3000, 5000, 10000, 20000],
-      metadata: {
-        filename: file.name,
-        filetype: file.type,
-        hash,
-        key: did,
-      },
-      onError: this.onError,
-      onProgress: this.onProgress,
-      onSuccess: () => {
-        this.onUpload(host, token, did);
-      },
-      fileReader: new FileReader(key),
-      fingerprint (file, options) {
-        return Promise.resolve(options.metadata.hash);
-      },
-      headers: {
-        Authorization: `Bearer ${token}`,
-      },
-      chunkSize,
-      onBeforeRequest (req) {
-        req.setHeader('signature', 'sig');
-      },
-    });
-
-    // Check if there are any previous uploads to continue.
-    upload.findPreviousUploads().then(function (previousUploads) {
-      // Found previous uploads so we select the first one.
-      if (previousUploads.length) {
-        upload.resumeFromPreviousUpload(previousUploads[0]);
-      }
-      // Start the upload
-      upload.start();
-    });
-    return did;
-  };
+    console.log('Skylink:', skylink, 'Key:', hexString)
+    return skylink
+  }
 }

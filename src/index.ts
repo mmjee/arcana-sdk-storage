@@ -1,23 +1,27 @@
+import * as Sentry from '@sentry/browser';
+import { Integrations } from '@sentry/tracing';
+
+import { Wallet } from 'ethers';
+import axios, { AxiosInstance } from 'axios';
+import { SkynetClient } from "skynet-js"
+
 import { Uploader } from './Uploader';
 import { Downloader } from './Downloader';
 import { Access } from './Access';
 import * as utils from './Utils';
-import { Wallet } from 'ethers';
-import axios, { AxiosInstance } from 'axios';
 import { Arcana as ArcanaT } from './typechain';
-import * as Sentry from '@sentry/browser';
-import { Integrations } from '@sentry/tracing';
 
 export class StorageProvider {
   private wallet: Wallet;
   private convergence: string;
-  private email: string;
+  private readonly email: string;
   private api: AxiosInstance;
   private appAddress: string;
   private appId: number;
   private arcana: ArcanaT;
-  private gateway: string;
-  private privateKey: string;
+  private skynetClient: SkynetClient;
+  private readonly gateway: string;
+  private readonly privateKey: string;
 
   constructor(config: utils.Config) {
     this.privateKey = config.privateKey;
@@ -31,13 +35,15 @@ export class StorageProvider {
       });
     }
     if (!this.privateKey) {
-      throw 'Null wallet';
+      throw new Error('Null wallet');
     }
     if (!config.gateway) {
       this.gateway = 'https://gateway-testnet.arcana.network/';
     } else {
       this.gateway = config.gateway;
     }
+
+    this.skynetClient = new SkynetClient('https://siasky.net')
   }
 
   setConvergence = async () => {
@@ -55,7 +61,7 @@ export class StorageProvider {
 
   getUploader = async () => {
     await this.setConvergence();
-    return new Uploader(this.appAddress, this.wallet, this.convergence, this.api);
+    return new Uploader(this.appAddress, this.wallet, this.convergence, this.api, this.skynetClient);
   };
 
   getAccess = async () => {
@@ -70,13 +76,13 @@ export class StorageProvider {
 
   login = async () => {
     let res = (await axios.get(this.gateway + 'get-config/')).data;
-    localStorage.setItem('forwarder', res['Forwarder']);
-    localStorage.setItem('rpc_url', res['RPC_URL']);
+    localStorage.setItem('forwarder', res.Forwarder);
+    localStorage.setItem('rpc_url', res.RPC_URL);
 
     this.wallet = utils.getWallet(this.privateKey);
 
-    let nonce = (await axios.get(this.gateway + `get-nonce/?address=${this.wallet.address}`)).data;
-    let sig = await this.wallet.signMessage(String(nonce));
+    const nonce = (await axios.get(this.gateway + `get-nonce/?address=${this.wallet.address}`)).data;
+    const sig = await this.wallet.signMessage(String(nonce));
 
     res = await axios.post(this.gateway + `login/`, {
       signature: sig,
@@ -95,7 +101,7 @@ export class StorageProvider {
 
   myFiles = async () => {
     await this.setConvergence();
-    let res = await this.api('api/list-files/');
+    const res = await this.api('api/list-files/');
     let data = [];
     if (res.data) data = res.data;
     return data;
@@ -103,7 +109,7 @@ export class StorageProvider {
 
   sharedFiles = async () => {
     await this.setConvergence();
-    let res = await this.api('api/shared-files/');
+    const res = await this.api('api/shared-files/');
     let data = [];
     if (res.data) data = res.data;
     return data;

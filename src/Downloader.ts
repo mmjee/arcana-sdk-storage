@@ -1,11 +1,10 @@
-import Decryptor from './decrypt';
-import { decryptWithPrivateKey } from 'eth-crypto';
-import { Arcana, hasher2Hex, fromHexString, AESDecrypt, makeTx, customError } from './Utils';
-import { utils } from 'ethers';
-import FileWriter from './FileWriter';
-import { readHash } from './constant';
-import Sha256 from './SHA256';
 import { AxiosInstance } from 'axios';
+import { SkynetClient } from "skynet-js";
+
+import Sha256 from './SHA256';
+import { fromHexString } from "./Utils";
+import { getUploadBySkylink} from "./db";
+import { getIVFromCounter } from "./Uploader";
 
 const downloadBlob = (blob, fileName) => {
   // @ts-ignore
@@ -39,66 +38,68 @@ export class Downloader {
   private hasher;
   private api: AxiosInstance;
   private appAddress: string;
+  private client: SkynetClient;
 
-  constructor(appAddress: string, wallet: any, convergence: string, api: AxiosInstance) {
+  constructor(appAddress: string, wallet: any, convergence: string, api: AxiosInstance, client) {
     this.wallet = wallet;
     this.convergence = convergence;
     this.hasher = new Sha256();
     this.api = api;
     this.appAddress = appAddress;
+    this.client = client;
   }
 
   onSuccess = async () => {};
   onProgress = async (bytesDownloaded: number, bytesTotal: number) => {};
 
   download = async (did) => {
-    did = did.substring(0, 2) !== '0x' ? '0x' + did : did;
-    const arcana = Arcana(this.appAddress, this.wallet);
-    let file;
-    try {
-      file = await arcana.getFile(did, readHash);
-    } catch (e) {
-      throw customError('UNAUTHORIZED', "You can't download this file");
-    }
-    let res = await makeTx(this.appAddress, this.api, this.wallet, 'checkPermission', [did, readHash]);
-    const decryptedKey = await decryptWithPrivateKey(
-      this.wallet.privateKey,
-      JSON.parse(utils.toUtf8String(file.encryptedKey)),
-    );
-    const key = await window.crypto.subtle.importKey('raw', fromHexString(decryptedKey), 'AES-CTR', false, [
+    const sl = await getUploadBySkylink(did)
+    const [{ metadata }, directUrl] = await Promise.all([
+      this.client.getMetadata(sl.skylink),
+      this.client.getSkylinkUrl(sl.skylink)
+    ])
+
+    const key = await window.crypto.subtle.importKey('raw', fromHexString(sl.key), 'AES-CTR', false, [
       'encrypt',
       'decrypt',
     ]);
 
-    const fileMeta = JSON.parse(await AESDecrypt(key, utils.toUtf8String(file.encryptedMetaData)));
+    // Decrypt file larger than RAM
+    const possibleChunks = Math.ceil(metadata.len / chunkSize)
+    const blobParts = []
 
-    let Dec = new Decryptor(key);
+    for (let chunkNo = 0; chunkNo < possibleChunks; chunkNo++) {
+      const min = chunkNo * chunkSize
+      const max = min + chunkSize
 
-    const fileWriter = new FileWriter(fileMeta.name);
-    const chunkSize = 10 * 2 ** 20;
-    let downloaded = 0;
-    for (let i = 0; i < fileMeta.size; i += chunkSize) {
-      const range = `bytes=${i}-${i + chunkSize - 1}`;
-      const download = await fetch(res.host + `files/${did}`, {
+      const { data: chunk, status } = await this.api.get(directUrl, {
         headers: {
-          Range: range,
-          Authorization: `Bearer ${res.token}`,
+          Range: 'bytes=' + min.toString() + '-' + max.toString()
         },
-      });
-      const buff = await download.arrayBuffer();
-      const dec = await Dec.decrypt(buff, i);
-      await fileWriter.write(dec, i);
-      this.hasher.update(dec);
-      downloaded += dec.byteLength;
-      await this.onProgress(downloaded, fileMeta.size);
+        responseType: 'arraybuffer'
+      })
+
+      if (status !== 206) {
+        console.error('???', status, chunk)
+      }
+
+      const iv = getIVFromCounter(chunkNo)
+      const ct = await window.crypto.subtle.decrypt(
+          {
+            counter: iv,
+            length: 64,
+            name: 'AES-CTR',
+          },
+          key,
+          chunk
+      )
+
+      blobParts.push(ct)
     }
-    const decryptedHash = hasher2Hex(this.hasher.digest());
-    const success = fileMeta.hash == decryptedHash;
-    if (success) {
-      fileWriter.createDownload();
-      await this.onSuccess();
-    } else {
-      throw new Error('Hash does not matches with uploaded file');
-    }
+
+    const blob = new Blob(blobParts, {
+      type: 'application/octet-stream'
+    })
+    return downloadBlob(blob, 'test.file')
   };
 }
