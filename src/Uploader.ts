@@ -134,6 +134,7 @@ export class Uploader {
       skylink,
       key: hexString
     })
+    this.onSuccess()
     return skylink
   }
 }
