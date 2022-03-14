@@ -1,4 +1,4 @@
-import { AxiosInstance } from 'axios';
+import axios, { AxiosInstance } from 'axios';
 import { SkynetClient } from "skynet-js";
 
 import Sha256 from './SHA256';
@@ -52,7 +52,7 @@ export class Downloader {
   onSuccess = async () => {};
   onProgress = async (bytesDownloaded: number, bytesTotal: number) => {};
 
-  download = async (did) => {
+  download = async (did, chunkSize = 2 ** 25) => {
     const sl = await getUploadBySkylink(did)
     const [{ metadata }, directUrl] = await Promise.all([
       this.client.getMetadata(sl.skylink),
@@ -65,14 +65,16 @@ export class Downloader {
     ]);
 
     // Decrypt file larger than RAM
-    const possibleChunks = Math.ceil(metadata.len / chunkSize)
+    // BUG / TODO
+    // metadata.len is somehow empty, using a fallback size of 1, i.e. files larger than 32MiB won't work
+    const possibleChunks = metadata.len ? Math.ceil(metadata.len / chunkSize) : 1
     const blobParts = []
 
     for (let chunkNo = 0; chunkNo < possibleChunks; chunkNo++) {
       const min = chunkNo * chunkSize
       const max = min + chunkSize
 
-      const { data: chunk, status } = await this.api.get(directUrl, {
+      const { data: chunk, status } = await axios.get(directUrl, {
         headers: {
           Range: 'bytes=' + min.toString() + '-' + max.toString()
         },

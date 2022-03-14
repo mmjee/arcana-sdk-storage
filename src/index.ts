@@ -71,7 +71,7 @@ export class StorageProvider {
 
   getDownloader = async () => {
     await this.setConvergence();
-    return new Downloader(this.appAddress, this.wallet, this.convergence, this.api);
+    return new Downloader(this.appAddress, this.wallet, this.convergence, this.api, this.skynetClient);
   };
 
   login = async () => {

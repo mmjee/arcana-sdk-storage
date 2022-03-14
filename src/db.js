@@ -11,5 +11,5 @@ export function addUploadToLocalDB (obj) {
 }
 
 export function getUploadBySkylink (sl) {
-  return DB.get(sl)
+  return DB.uploads.get(sl)
 }

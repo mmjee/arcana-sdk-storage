@@ -7,6 +7,7 @@ import { AxiosInstance } from 'axios';
 
 import { promisify } from 'util'
 import _blobToBuffer from 'blob-to-buffer'
+import {addUploadToLocalDB} from "./db";
 
 const blobToBuffer = promisify(_blobToBuffer)
 
@@ -129,6 +130,10 @@ export class Uploader {
     const hexString = toHexString(aesRaw);
 
     console.log('Skylink:', skylink, 'Key:', hexString)
+    await addUploadToLocalDB({
+      skylink,
+      key: hexString
+    })
     return skylink
   }
 }
