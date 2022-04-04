@@ -8,10 +8,59 @@ import {
   customError,
   isFileUploaded,
 } from './Utils';
+import { promisify } from 'util'
 import * as tus from 'tus-js-client';
 import FileReader from './fileReader';
 import { utils, BigNumber, ethers } from 'ethers';
-import { AxiosInstance } from 'axios';
+
+import axios, { AxiosInstance } from 'axios';
+import _blobToBuffer from 'blob-to-buffer'
+
+const blobToBuffer = promisify(_blobToBuffer)
+
+export function getIVFromCounter (value) {
+  if (value === 0) {
+    return new Uint8Array([0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0]);
+  }
+  let counterValue = value / 16;
+  const counter = new Uint8Array(16);
+  for (let index = 15; index >= 0; --index) {
+    counter[index] = counterValue % 256;
+    counterValue = Math.floor(counterValue / 256);
+  }
+  return counter;
+}
+
+// Encrypt a file larger than available RAM, using only (by default) 32MB at a time
+async function encryptWholeFile ({ key, file, chunkSize }) {
+  const possibleChunks = Math.ceil(file.size / chunkSize)
+  const blobParts = []
+
+  for (let chunkNo = 0; chunkNo < possibleChunks; chunkNo++) {
+    const min = chunkNo * chunkSize
+    const max = min + chunkSize
+
+    const chunk = file.slice(min, max)
+    const buf = await blobToBuffer(chunk)
+
+    const iv = getIVFromCounter(chunkNo)
+    const ct = await window.crypto.subtle.encrypt(
+      {
+        counter: iv,
+        length: 64,
+        name: 'AES-CTR',
+      },
+      key,
+      buf
+    )
+
+    blobParts.push(ct)
+  }
+
+  return new Blob(blobParts, {
+    type: 'application/octet-stream'
+  })
+}
 
 export class Uploader {
   private provider: any;
@@ -37,7 +86,7 @@ export class Uploader {
       let res;
       for (let i = 0; i < 5; i++) {
         try {
-          res = await this.api.get(`${host}hash`, { headers: { Authorization: `Bearer ${token}` } });
+          res = await this.api.get(`${host}hash`, {headers: {Authorization: `Bearer ${token}`}});
           break;
         } catch {
           await new Promise((r) => setTimeout(r, 1000));
@@ -64,101 +113,70 @@ export class Uploader {
     }
   };
 
-  upload = async (fileRaw: any, chunkSize: number = 10 * 2 ** 20) => {
-    let file = fileRaw;
+  upload = async (file: any, chunkSize: number = 2 ** 25) => {
     const walletAddress = (await this.provider.send('eth_requestAccounts', []))[0];
     const hasher = new KeyGen(file, chunkSize);
     let key;
     const hash = await hasher.getHash();
-    let prevKey = localStorage.getItem(`${walletAddress}::key::${hash}`);
-    let host = localStorage.getItem(`${walletAddress}::host::${hash}`);
-    let token = localStorage.getItem(`${walletAddress}::token::${hash}`);
     const sign_hash = await this.provider.send('personal_sign', [
       `Sign this to proceed with the encryption of file with hash ${hash}`,
       walletAddress,
     ]);
     const did = utils.id(hash + sign_hash);
-    console.log({ did });
-    if (prevKey) {
-      key = await window.crypto.subtle.importKey('raw', fromHexString(prevKey), 'AES-CTR', false, ['encrypt']);
-      if (await isFileUploaded(this.appAddress, did, this.provider)) {
-        throw customError('TRANSACTION', `File is already uploaded. DID is ${did}`);
-      }
-    } else {
-      key = await window.crypto.subtle.generateKey(
-        {
-          name: 'AES-CTR',
-          length: 256,
-        },
-        true,
-        ['encrypt', 'decrypt'],
-      );
-      const aes_raw = await crypto.subtle.exportKey('raw', key);
-      const hexString = toHexString(aes_raw);
-      const encryptedMetaData = await AESEncrypt(
-        key,
-        JSON.stringify({
-          name: file.name,
-          type: file.type,
-          size: file.size,
-          lastModified: file.lastModified,
-          hash,
-        }),
-      );
 
-      let node = (await this.api.get('/get-node-address/')).data;
-      host = node.host;
-      let res = await makeTx(this.appAddress, this.api, this.provider, 'uploadInit', [
-        did,
-        BigNumber.from(6),
-        BigNumber.from(4),
-        BigNumber.from(file.size),
-        utils.toUtf8Bytes(encryptedMetaData),
-        utils.toUtf8Bytes(hexString),
-        node.address,
-      ]);
-      token = res.token;
-      localStorage.setItem(`${walletAddress}::host:${hash}`, host);
-      localStorage.setItem(`${walletAddress}::key::${hash}`, hexString);
-      localStorage.setItem(`${walletAddress}::token::${hash}`, token);
-    }
-    let endpoint = host + 'files/';
-	  let upload = new tus.Upload(file, {
-      endpoint,
-      retryDelays: [0, 3000, 5000, 10000, 20000],
-      metadata: {
-        filename: file.name,
-        filetype: file.type,
+    key = await window.crypto.subtle.generateKey(
+      {
+        name: 'AES-CTR',
+        length: 256,
+      },
+      true,
+      ['encrypt', 'decrypt'],
+    );
+
+    const aesRaw = await crypto.subtle.exportKey('raw', key);
+    const hexString = toHexString(aesRaw);
+    const encryptedMetaData = await AESEncrypt(
+      key,
+      JSON.stringify({
+        name: file.name,
+        type: file.type,
+        size: file.size,
+        lastModified: file.lastModified,
         hash,
-        key: did,
-      },
-      onError: this.onError,
-      onProgress: this.onProgress,
-      onSuccess: () => {
-        this.onUpload(host, token, did);
-      },
-      fileReader: new FileReader(key),
-      fingerprint: function (file, options) {
-        return Promise.resolve(options.metadata.hash);
-      },
-      headers: {
-        Authorization: `Bearer ${token}`,
-      },
-      chunkSize,
-      onBeforeRequest: function (req) {
-        req.setHeader('signature', 'sig');
-      },
-    });
+      }),
+    );
 
-    // Check if there are any previous uploads to continue.
-    upload.findPreviousUploads().then(function (previousUploads) {
-      // Found previous uploads so we select the first one.
-      if (previousUploads.length) {
-        upload.resumeFromPreviousUpload(previousUploads[0]);
+    const ciphertextBlob = await encryptWholeFile({
+      key,
+      file,
+      chunkSize
+    })
+
+    const node = (await this.api.get('/api/get-address/')).data;
+    const host = node.host;
+
+    const res = await makeTx(this.appAddress, this.api, this.provider, 'uploadInit', [
+      did,
+      BigNumber.from(6),
+      BigNumber.from(4),
+      BigNumber.from(file.size),
+      utils.toUtf8Bytes(encryptedMetaData),
+      utils.toUtf8Bytes(hexString),
+      node.address,
+    ]);
+
+    await axios({
+      method: 'PUT',
+      url: 'https://localhost:8022/api/v1/upload/' + did,
+      data: ciphertextBlob,
+      headers: {
+        'Authentication': 'Bearer ' + res.token,
+        'Content-Type': 'application/octet-stream'
       }
-      // Start the upload
-      upload.start();
-    });
+    })
+
+    // console.log('Upload Completed:', data)
+    this.onSuccess()
     return did;
   };
 }
