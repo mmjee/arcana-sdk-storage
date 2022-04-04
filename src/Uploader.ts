@@ -118,11 +118,11 @@ export class Uploader {
     const hasher = new KeyGen(file, chunkSize);
     let key;
     const hash = await hasher.getHash();
-    const sign_hash = await this.provider.send('personal_sign', [
+    const signedHash = await this.provider.send('personal_sign', [
       `Sign this to proceed with the encryption of file with hash ${hash}`,
       walletAddress,
     ]);
-    const did = utils.id(hash + sign_hash);
+    const did = utils.id(hash + signedHash);
 
     key = await window.crypto.subtle.generateKey(
       {
