@@ -53,12 +53,6 @@ export class Downloader {
     console.log('from downloader', did);
     did = did.substring(0, 2) !== '0x' ? '0x' + did : did;
     const arcana = Arcana(this.appAddress, this.provider);
-    // @ts-ignore
-    window.arcana = arcana;
-    // @ts-ignore
-    window.appAddress = this.appAddress;
-    // @ts-ignore
-    window.provider = this.provider;
 
     let file;
     try {
@@ -66,7 +60,7 @@ export class Downloader {
     } catch (e) {
       throw customError('UNAUTHORIZED', "You can't download this file");
     }
-    let res = await makeTx(this.appAddress, this.api, this.provider, 'checkPermission', [did, readHash]);
+    const res = await makeTx(this.appAddress, this.api, this.provider, 'checkPermission', [did, readHash]);
     const decryptedKey = utils.toUtf8String(file.encryptedKey);
     const key = await window.crypto.subtle.importKey('raw', fromHexString(decryptedKey), 'AES-CTR', false, [
       'encrypt',
@@ -98,7 +92,7 @@ export class Downloader {
     const decryptedHash = hasher2Hex(this.hasher.digest());
     const success = fileMeta.hash == decryptedHash;
     if (success) {
-      fileWriter.createDownload();
+      await fileWriter.createDownload();
       await this.onSuccess();
     } else {
       throw new Error('Hash does not matches with uploaded file');
