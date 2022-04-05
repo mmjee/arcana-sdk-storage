@@ -1,11 +1,12 @@
-import Decryptor from './decrypt';
 import { decryptWithPrivateKey } from 'eth-crypto';
-import { Arcana, hasher2Hex, fromHexString, AESDecrypt, makeTx, customError } from './Utils';
 import { utils } from 'ethers';
-import FileWriter from './FileWriter';
-import { readHash } from './constant';
+import axios, { AxiosInstance } from 'axios';
+
 import Sha256 from './SHA256';
-import { AxiosInstance } from 'axios';
+import { getIVFromCounter } from "./Uploader";
+
+import * as DB from './db'
+import {customError, fromHexString} from "./Utils";
 
 const downloadBlob = (blob, fileName) => {
   // @ts-ignore
@@ -49,11 +50,15 @@ export class Downloader {
   onSuccess = async () => {};
   onProgress = async (bytesDownloaded: number, bytesTotal: number) => {};
 
-  download = async (did) => {
-    console.log('from downloader', did);
+  download = async (did, chunkSize = 2 ** 25) => {
     did = did.substring(0, 2) !== '0x' ? '0x' + did : did;
-    const arcana = Arcana(this.appAddress, this.provider);
+    // const arcana = Arcana(this.appAddress, this.provider);
 
+    const file = await DB.getUploadByDID(did)
+    if (!file) {
+      throw customError('UNAUTHORIZED', 'File does not exist')
+    }
+    /*
     let file;
     try {
       file = await arcana.getFile(did, readHash, { from: await this.provider.getSigner().getAddress() });
@@ -62,40 +67,53 @@ export class Downloader {
     }
     const res = await makeTx(this.appAddress, this.api, this.provider, 'checkPermission', [did, readHash]);
     const decryptedKey = utils.toUtf8String(file.encryptedKey);
-    const key = await window.crypto.subtle.importKey('raw', fromHexString(decryptedKey), 'AES-CTR', false, [
+     */
+    const key = await window.crypto.subtle.importKey('raw', fromHexString(file.key), 'AES-CTR', false, [
       'encrypt',
       'decrypt',
     ]);
 
-    const fileMeta = JSON.parse(await AESDecrypt(key, utils.toUtf8String(file.encryptedMetaData)));
+    // const fileMeta = JSON.parse(await AESDecrypt(key, utils.toUtf8String(file.encryptedMetaData)));
+    const fileMeta = file.meta
 
-    let Dec = new Decryptor(key);
+    // Decrypt file larger than RAM
+    // BUG / TODO
+    // metadata.len is somehow empty, using a fallback size of 1, i.e. files larger than 32MiB won't work
+    const possibleChunks = fileMeta.len ? Math.ceil(fileMeta.size / chunkSize) : 1
+    const blobParts = []
 
-    const fileWriter = new FileWriter(fileMeta.name);
-    const chunkSize = 10 * 2 ** 20;
-    let downloaded = 0;
-    for (let i = 0; i < fileMeta.size; i += chunkSize) {
-      const range = `bytes=${i}-${i + chunkSize - 1}`;
-      const download = await fetch(res.host + `files/${did}`, {
+    for (let chunkNo = 0; chunkNo < possibleChunks; chunkNo++) {
+      const min = chunkNo * chunkSize
+      const max = min + chunkSize
+
+      const { data: chunk, status } = await axios.get('http://localhost:8022/api/v1/download/' + did, {
         headers: {
-          Range: range,
-          Authorization: `Bearer ${res.token}`,
+          Range: 'bytes=' + min.toString() + '-' + max.toString()
         },
-      });
-      const buff = await download.arrayBuffer();
-      const dec = await Dec.decrypt(buff, i);
-      await fileWriter.write(dec, i);
-      this.hasher.update(dec);
-      downloaded += dec.byteLength;
-      await this.onProgress(downloaded, fileMeta.size);
+        responseType: 'arraybuffer'
+      })
+
+      if (status !== 206) {
+        console.error('???', status, chunk)
+      }
+
+      const iv = getIVFromCounter(chunkNo)
+      const ct = await window.crypto.subtle.decrypt(
+        {
+          counter: iv,
+          length: 64,
+          name: 'AES-CTR',
+        },
+        key,
+        chunk
+      )
+
+      blobParts.push(ct)
     }
-    const decryptedHash = hasher2Hex(this.hasher.digest());
-    const success = fileMeta.hash == decryptedHash;
-    if (success) {
-      await fileWriter.createDownload();
-      await this.onSuccess();
-    } else {
-      throw new Error('Hash does not matches with uploaded file');
-    }
+
+    const blob = new Blob(blobParts, {
+      type: 'application/octet-stream'
+    })
+    return downloadBlob(blob, 'test.file')
   };
 }

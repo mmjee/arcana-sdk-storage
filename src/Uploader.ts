@@ -1,3 +1,10 @@
+import { promisify } from 'util'
+import * as tus from 'tus-js-client';
+import { utils, BigNumber, ethers } from 'ethers';
+
+import axios, { AxiosInstance } from 'axios';
+import _blobToBuffer from 'blob-to-buffer'
+
 import {
   KeyGen,
   fromHexString,
@@ -8,13 +15,8 @@ import {
   customError,
   isFileUploaded,
 } from './Utils';
-import { promisify } from 'util'
-import * as tus from 'tus-js-client';
+import * as DB from './db'
 import FileReader from './fileReader';
-import { utils, BigNumber, ethers } from 'ethers';
-
-import axios, { AxiosInstance } from 'axios';
-import _blobToBuffer from 'blob-to-buffer'
 
 const blobToBuffer = promisify(_blobToBuffer)
 
@@ -155,6 +157,13 @@ export class Uploader {
     const node = (await this.api.get('/api/get-address/')).data;
     const host = node.host;
 
+    await DB.addUploadToLocalDB({
+      did,
+      hexString,
+      meta: {
+        size: ciphertextBlob.size
+      }
+    })
     const res = await makeTx(this.appAddress, this.api, this.provider, 'uploadInit', [
       did,
       BigNumber.from(6),
