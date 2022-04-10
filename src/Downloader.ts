@@ -108,7 +108,7 @@ export class Downloader {
         chunk
       )
 
-      blobParts.push(ct)
+      blobParts.push(new Blob([ct]))
     }
 
     const blob = new Blob(blobParts, {
