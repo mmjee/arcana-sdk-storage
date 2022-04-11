@@ -164,7 +164,7 @@ export class Uploader {
         size: ciphertextBlob.size
       }
     })
-    const res = await makeTx(this.appAddress, this.api, this.provider, 'uploadInit', [
+    /* const res = await makeTx(this.appAddress, this.api, this.provider, 'uploadInit', [
       did,
       BigNumber.from(6),
       BigNumber.from(4),
@@ -172,7 +172,7 @@ export class Uploader {
       utils.toUtf8Bytes(encryptedMetaData),
       utils.toUtf8Bytes(hexString),
       node.address,
-    ]);
+    ]); */
 
     await axios({
       method: 'PUT',
